@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+*.py[cod]
+
+# MATLAB
+*.asv
+*.m~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data files (if large)
+*.mat
+*.h5
+*.hdf5
+data/
+
+# IDE
+.vscode/
+.idea/
