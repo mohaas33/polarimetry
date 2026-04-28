@@ -176,14 +176,16 @@ divided out so units are e.g. Hz/deg, Hz/MeV, Hz/ns.
 - `h_theta_p` — rate vs θ_proj,lab [deg]
 - `h_tof` — rate vs TOF [ns]
 - `h_TC_th` — 2D elastic locus T_C vs θ_C
-- `h_Edep_vs_tof` — 2D deposited energy vs TOF (particle ID handle)
+- `h_ToF_vs_Edep` — 2D deposited energy vs TOF (particle ID handle)
 
 ### 4.2 Pad-level histograms
 
 For each of the recoil and forward rings:
-- `h_*_pad` — **data rate** map: pixels firing per second (above threshold).
-  Integral grows with mean cluster size × physics rate.
-- `h_*_pad_charge` — charge density map [keV·Hz / pixel].
+- `h_*_pad` — **hit-rate** map: event rate per spatial bin [Hz/pad] at the
+  smeared hit position. Does not account for cluster spreading.
+- `h_*_pad_charge` — charge density map [keV·Hz / pixel]: pixel firing rate
+  map after spreading the deposited energy over pixels with the analytic
+  Gaussian erf integrals (pixels above threshold counted).
 - `h_*_pad_nosm` — same as `h_*_pad` but without target smearing.
 - `h_*_pad_diff` — per-event displacement (smeared − nominal).
 
@@ -206,8 +208,9 @@ All recoil/forward ring numbers are in `namespace Det`. Change them and
 the pad intersection updates automatically.
 
 ### Tuning smearing physics
-`SmearParams` struct in `RunSim`. Defaults: ρ=1.5 g/cm³ (amorphous C),
-X₀=42.7 g/cm² (graphite), Z=6 (carbon ion), dE/dx=0.1 MeV/μm.
+`SmearParams` struct (file scope, above `RunSim`). Defaults: ρ=1.5 g/cm³
+(amorphous C), X₀=42.7 g/cm² (graphite), Z=6 (carbon ion), dE/dx=0.1 MeV/μm.
+Instantiated inside `RunSim` and populated from `BeamTarget::deff_nm`.
 
 ### Tuning charge-sharing
 `sigma_diff_mm`, `Q_thr_keV` constants near the top of the per-event
@@ -251,11 +254,12 @@ pC_rate_sim.C
 ├── CMKin struct + MakeCMKin   — relativistic kinematics
 ├── BeamTarget struct + funcs  — Table 1 beam parameters
 ├── Det namespace              — detector geometry constants
+├── SmearParams struct         — fiber smearing configuration (file scope)
 ├── ApplyTargetSmearing        — fiber MS + dE
 ├── HitRecoilPad / HitFwdPad   — ray–pad intersection (with origin)
 ├── SimResult struct           — all output histograms + summary numbers
 ├── RunSim                     — main MC loop (this is the work)
-├── MakeKinPlot / MakePadPlot  — drawing
+├── MakeKinPlot / MakePadPlot / MakeDiffPlot / MakeChargePlot  — drawing
 └── pC_rate_sim / He3C_rate_sim / run_all   — top-level driver functions
 ```
 
@@ -268,15 +272,17 @@ Requires ROOT (any version with TVector3 — i.e. ≥5).
 ```
 root -l
 .L pC_rate_sim.C+
-run_all()                      // 4 energies, 500k events each
-run_all(1000000, 55.0, kTRUE)  // 1M events, 55 um pitch, smearing ON
-run_all(500000, 55.0, kFALSE)  // disable smearing globally
-pC_rate_sim(500., 500000)      // single energy
-He3C_rate_sim(443., 500000)
+run_all()                               // 4 energies, 5M events each (default)
+run_all(1000000, 55.0, kTRUE)           // 1M events, 55 um pitch, smearing ON
+run_all(500000, 55.0, kFALSE)           // disable smearing globally
+pC_rate_sim(500., 500000)     // single proton energy
+He3C_rate_sim(443., 500000)             // single 3He energy
 ```
 
-Each call produces:
-- `kin_<species>_<T>MeV[_smear|_nosm].png/.pdf`
-- `pads_<species>_<T>MeV[_smear|_nosm].png/.pdf`
+Each call produces four output files per energy point:
+- `kin_<species>_<T>MeV[_smear|_nosm].png/.pdf`   — kinematic distributions
+- `pads_<species>_<T>MeV[_smear|_nosm].png/.pdf`  — pad rate maps + displacement
+- `diff_<species>_<T>MeV[_smear|_nosm].png/.pdf`  — smeared vs nominal projections
+- `charge_<species>_<T>MeV[_smear|_nosm].png/.pdf` — charge/cluster distributions
 
 and prints a summary table comparing rates against paper Table 13.
