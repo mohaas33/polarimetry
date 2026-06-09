@@ -281,6 +281,7 @@ namespace Det {
     const Double_t recoil_r_mm      = 100.0;
     const Double_t recoil_z_mm      =  17.4;
     const Double_t recoil_side_mm   =  40.0;
+    //const Double_t recoil_side_mm   =  15.0;
     const Double_t recoil_theta_deg =  80.0;
     const Double_t recoil_thC_lo    =  68.7;
     const Double_t recoil_thC_hi    =  91.3;
@@ -455,6 +456,35 @@ Bool_t HitRecoilPad(Double_t dx, Double_t dy, Double_t dz,
     Double_t half = Det::recoil_side_mm / 2.0;
     return (TMath::Abs(u_mm) <= half && TMath::Abs(v_mm) <= half);
 }
+Bool_t HitRecoilPad_L(Double_t dx, Double_t dy, Double_t dz,
+                    Double_t phi_stn,
+                    Double_t& u_mm, Double_t& v_mm,
+                    const TVector3& origin_mm = TVector3(0,0,0))
+{
+    const Double_t th_n = TMath::DegToRad() * (-1 * Det::recoil_theta_deg);
+    Double_t sn = TMath::Sin(th_n), cn = TMath::Cos(th_n);
+    Double_t cs = TMath::Cos(phi_stn), ss = TMath::Sin(phi_stn);
+
+    TVector3 P0(Det::recoil_r_mm * cs,
+                Det::recoil_r_mm * ss,
+                Det::recoil_z_mm);
+    TVector3 n_face(sn*cs, sn*ss, cn);
+    TVector3 u_loc(-ss,    cs,    0.0);
+    TVector3 v_loc(cn*cs,  cn*ss, -sn);
+
+    TVector3 d(dx, dy, dz);
+    Double_t denom = d.Dot(n_face);
+    if (denom <= 1e-9) return kFALSE;
+    Double_t lam = (P0.Dot(n_face) - origin_mm.Dot(n_face)) / denom;
+    if (lam <= 0) return kFALSE;
+
+    TVector3 H = origin_mm + d * lam;
+    TVector3 rel = H - P0;
+    u_mm = rel.Dot(u_loc);
+    v_mm = rel.Dot(v_loc);
+    Double_t half = Det::recoil_side_mm / 2.0;
+    return (TMath::Abs(u_mm) <= half && TMath::Abs(v_mm) <= half);
+}
 
 Bool_t HitFwdPad(Double_t dx, Double_t dy, Double_t dz,
                  Double_t phi_stn,
@@ -506,6 +536,7 @@ struct SimResult {
     TH1D* h_theta_p = nullptr;
     TH1D* h_tof     = nullptr;
     TH2D* h_TC_th   = nullptr;
+    TH2D* h_Tp_th   = nullptr;
     TH2D* h_TC_du   = nullptr;
     TH2D* h_TC_dv   = nullptr;
 
@@ -525,6 +556,11 @@ struct SimResult {
     TH2D* h_recoil_pad_charge   = nullptr;   // Hz x keV per pixel
     TH1D* h_clusterSize         = nullptr;   // pixels per cluster (rate-weighted)
     TH2D* h_clusterSize_vs_TC   = nullptr;   // cluster size vs T_C
+    TH2D* h_recoil_pad_charge_L   = nullptr;   // Hz x keV per pixel
+    TH1D* h_clusterSize_L         = nullptr;   // pixels per cluster (rate-weighted)
+    TH2D* h_TC_phi   = nullptr;   // T_C vs phi for large clusters (>=5 pixels)
+    TH2D* h_TC_phi_L   = nullptr;   // T_C vs phi for large clusters (>=5 pixels)
+    TH2D* h_clusterSize_vs_TC_L   = nullptr;   // cluster size vs T_C
     TH2D* h_ToF_vs_Edep = nullptr;   // deposited energy [keV] vs TOF [ns]
 };
 
@@ -533,6 +569,7 @@ struct SimResult {
 // =============================================================================
 SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
                  Double_t pad_pitch_um = 55.0,
+                 //Double_t pad_pitch_um = 5000.0,
                  Bool_t   smearing_on  = kTRUE,
                  Bool_t   verbose      = kTRUE)
 {
@@ -604,6 +641,8 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
         ";TOF [ns];Rate [counts/s/ns]", 100, 0, 60);
     R.h_TC_th = new TH2D(TString::Format("h_TC_th_%s", R.tag.Data()),
         ";#theta_{C}^{lab} [deg];T_{C} [MeV]", 90, 60, 90, 120, 0, 120);
+    R.h_Tp_th = new TH2D(TString::Format("h_Tp_th_%s", R.tag.Data()),
+        ";#theta_{proj}^{lab} [deg];T_{proj} [MeV]", 180, 0, 90, 1200, 0, 1200);
     R.h_TC_du = new TH2D(TString::Format("h_TC_du_%s", R.tag.Data()),
         ";T_{C} [MeV];#Delta u [mm]", 120, 0, 120, 200, -2.0, 2.0);
     R.h_TC_dv = new TH2D(TString::Format("h_TC_dv_%s", R.tag.Data()),
@@ -661,15 +700,38 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
                         "u [mm];v [mm]", pad_pitch_um),
         n_pad_recoil, -half_recoil, half_recoil,
         n_pad_recoil, -half_recoil, half_recoil);
+    R.h_recoil_pad_charge_L = new TH2D(
+        TString::Format("h_recoil_pad_charge_L_%s", R.tag.Data()),
+        TString::Format("Recoil pad charge density (L) [Hz#timeskeV/pixel/stn] (pitch %.0f #mum);"
+                        "u [mm];v [mm]", pad_pitch_um),
+        n_pad_recoil, -half_recoil, half_recoil,
+        n_pad_recoil, -half_recoil, half_recoil);
 
     R.h_clusterSize = new TH1D(
         TString::Format("h_clusterSize_%s", R.tag.Data()),
         "Cluster size (pixels above 5% of central charge);N_{pixels};Rate [Hz/stn]",
         20, -0.5, 19.5);
+    R.h_clusterSize_L = new TH1D(
+        TString::Format("h_clusterSize_L_%s", R.tag.Data()),
+        "Cluster size (pixels above 5% of central charge) (L);N_{pixels};Rate [Hz/stn]",
+        20, -0.5, 19.5);
+    R.h_TC_phi = new TH2D(
+        TString::Format("h_TC_phi_%s", R.tag.Data()),
+        "T_{C} vs #phi for large clusters (>=5 pixels);#phi_{C}^{lab} [deg];T_{C}^{lab} [MeV]",
+        600, -60, 60, 240, 0, 60);
+
+    R.h_TC_phi_L = new TH2D(
+        TString::Format("h_TC_phi_L_%s", R.tag.Data()),
+        "T_{C} vs #phi for large clusters (>=5 pixels) (L);#phi_{C}^{lab} [deg];T_{C}^{lab} [MeV]",
+        600, -60, 60, 240, 0, 60);
 
     R.h_clusterSize_vs_TC = new TH2D(
         TString::Format("h_clusterSize_vs_TC_%s", R.tag.Data()),
         "Cluster size vs T_{C};T_{C}^{lab} [MeV];N_{pixels}",
+        240, 0, 120, 20, -0.5, 19.5);   
+    R.h_clusterSize_vs_TC_L = new TH2D(
+        TString::Format("h_clusterSize_vs_TC_L_%s", R.tag.Data()),
+        "Cluster size vs T_{C} (L);T_{C}^{lab} [MeV];N_{pixels}",
         240, 0, 120, 20, -0.5, 19.5);   
         
     R.h_recoil_charge_vs_TC = new TH2D(
@@ -697,6 +759,8 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
         Double_t pz_cm = k.p_cm * costh;
         Double_t pT    = TMath::Sqrt(px_cm*px_cm + py_cm*py_cm);
         Double_t pz_p_lab = k.gamma_cm * (pz_cm + k.beta_cm * k.E1_cm);
+        Double_t E_p_lab = k.gamma_cm * (k.E1_cm + k.beta_cm * pz_cm);
+        Double_t T_p_lab  = E_p_lab - PC::mp;
         Double_t p_p_lab  = TMath::Sqrt(pT*pT + pz_p_lab*pz_p_lab);
         Double_t th_p_lab = TMath::RadToDeg() * TMath::ATan2(pT, pz_p_lab);
 
@@ -745,6 +809,7 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
         R.h_theta_p->Fill(th_p_lab, w);
         R.h_tof    ->Fill(tof_ns,   w);
         R.h_TC_th  ->Fill(th_C_lab, T_C_lab, w);
+        R.h_Tp_th  ->Fill(th_p_lab, T_p_lab, w);
 
         if (th_C_lab >= Det::recoil_thC_lo && th_C_lab <= Det::recoil_thC_hi)
             sumw_recoil_2pi += w;
@@ -782,8 +847,13 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
                             origin_exit);
 
         Double_t u_s, v_s;
+        Double_t u_s_L, v_s_L;
         Bool_t hit_r_s = HitRecoilPad(dxC, dyC, dzC,
                                        phi_stn_C, u_s, v_s, origin_exit);
+        Bool_t hit_r_s_L = HitRecoilPad_L(dxC, dyC, dzC,
+                                       phi_stn_C, u_s_L, v_s_L, origin_exit);
+        Bool_t is_left  = (TMath::Sin(phi_C) > 0.001);  // stations 1,2 (phi=60°,120°)
+        Bool_t is_right = (TMath::Sin(phi_C) < -0.001); // stations 4,5 (phi=240°,300°)                                       
         if (hit_r_s || hit_r_nom) {
             sumw_recoil_pad += w;
             R.h_recoil_pad->Fill(u_s, v_s, w);
@@ -848,7 +918,8 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
                         Double_t pix_u_center = -half_recoil + (pu + 0.5) * pitch_mm;
                         Double_t pix_v_center = -half_recoil + (pv + 0.5) * pitch_mm;
                     
-                        R.h_recoil_pad_charge->Fill(pix_u_center, pix_v_center, w);// * q_pixel);
+                        if(is_right) R.h_recoil_pad_charge->Fill(pix_u_center, pix_v_center, w);// * q_pixel);
+                        if(is_left) R.h_recoil_pad_charge_L->Fill(pix_u_center, pix_v_center, w);// * q_pixel);
                     
                         cluster_n++;
                         cluster_E_keV += q_pixel;
@@ -857,10 +928,19 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
             }
             // Per-event cluster statistics (rate-weighted)
             if (cluster_n > 0) {
-                R.h_clusterSize       ->Fill(cluster_n,            w);
-                R.h_clusterSize_vs_TC ->Fill(T_C_s, cluster_n,     w);
+                if(is_right){
+                    R.h_clusterSize       ->Fill(cluster_n,            w);
+                    R.h_clusterSize_vs_TC ->Fill(T_C_s, cluster_n,     w);
+                    R.h_TC_phi->Fill(phi_stn_C, T_C_s);
+                }
+                if(is_left){
+                    R.h_clusterSize_L       ->Fill(cluster_n,            w);
+                    R.h_clusterSize_vs_TC_L ->Fill(T_C_s, cluster_n,     w);
+                    R.h_TC_phi_L->Fill(phi_stn_C, T_C_s);
+                }
             }
         }
+
     }
 
     // -------- Scale to rate --------
@@ -896,6 +976,7 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
     scale1D(R.h_theta_p);
     scale1D(R.h_tof);
     R.h_TC_th->Scale(scale_counts_to_rate);
+    R.h_Tp_th->Scale(scale_counts_to_rate);
 
     R.h_recoil_pad     ->Scale(scale_counts_to_rate / Det::n_stn);
     R.h_fwd_pad        ->Scale(scale_counts_to_rate / Det::n_stn);
@@ -907,6 +988,7 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
     R.h_TC_du          ->Scale(scale_counts_to_rate / Det::n_stn);
 
     R.h_recoil_pad_charge->Scale(scale_counts_to_rate / Det::n_stn);
+    R.h_recoil_pad_charge_L->Scale(scale_counts_to_rate / Det::n_stn);
     R.h_clusterSize      ->Scale(scale_counts_to_rate / Det::n_stn);
     R.h_clusterSize_vs_TC->Scale(scale_counts_to_rate / Det::n_stn);  
     R.h_recoil_charge_vs_TC->Scale(scale_counts_to_rate / Det::n_stn);
@@ -949,6 +1031,8 @@ SimResult RunSim(TString species, Double_t T_MeV, Int_t n_events,
                R.h_clusterSize->GetMean());
         Printf("     Total deposited charge = %.3e keV/s/stn",
                R.h_recoil_pad_charge->Integral());
+        Printf("     Total deposited charge (L) = %.3e keV/s/stn",
+               R.h_recoil_pad_charge_L->Integral());
     }
 
     return R;
@@ -1016,11 +1100,25 @@ void MakeKinPlot(const SimResult& R) {
     c->cd(4); gPad->SetGrid();
     gPad->SetLeftMargin(0.14); gPad->SetBottomMargin(0.14);
     gPad->SetRightMargin(0.14);
-    R.h_TC_th->Draw("COLZ");
+
+    R.h_TC_th->SetMarkerStyle(7); R.h_TC_th->SetMarkerColor(kRed+1);R.h_TC_th->SetLineColor(kRed+1);
+    R.h_Tp_th->SetMarkerStyle(7); R.h_Tp_th->SetMarkerColor(kBlue+2);R.h_Tp_th->SetLineColor(kBlue+2);
+
+    R.h_TC_th->Draw("colz");
+    //R.h_Tp_th->Draw("");
     R.h_TC_th->SetTitle(TString::Format(
         "%s, T=%.0f MeV: elastic locus;"
         "#theta_{C}^{lab} [deg];T_{C}^{lab} [MeV]",
         spc_name.Data(), R.T_MeV));
+    //TLegend* leg = new TLegend(0.16, 0.66, 0.62, 0.92);
+    //leg->AddEntry(R.h_TC_th, "Recoil", "P");
+    //leg->AddEntry(R.h_Tp_th, "Projectile", "P");
+    //leg->SetTextSize(0.048);
+    //leg-> SetTextFont(42);
+    //leg->SetFillColor(0);
+    //leg->SetFillStyle(0);
+    //leg->SetBorderSize(0);    
+    //leg->Draw();
 
     c->cd(1);
     TPaveText* pt = new TPaveText(0.16, 0.66, 0.62, 0.92, "NDC");
@@ -1193,7 +1291,7 @@ void MakeChargePlot(const SimResult& R) {
         TString::Format("c_charge_%s", R.tag.Data()),
         TString::Format("Charge distributions %s", R.tag.Data()),
         1400, 2000);
-    c->Divide(2, 3, 0.004, 0.004);
+    c->Divide(3, 3, 0.004, 0.004);
     TString spc_name = (R.species == "p") ? "pC" : "^{3}HeC";
     c->cd(1); gPad->SetGrid();
     TH1D* h_recoil_pad_x = (TH1D*)R.h_recoil_pad->ProjectionX();
@@ -1269,7 +1367,17 @@ void MakeChargePlot(const SimResult& R) {
     c->cd(6);            
     gPad->SetLeftMargin(0.14); gPad->SetRightMargin(0.16);
     gPad->SetBottomMargin(0.13);
-    R.h_clusterSize_vs_TC ->Draw("COLZ");
+    R.h_recoil_pad_charge_L ->Draw("COLZ");
+    TLatex lt1;
+    lt1.SetTextSize(0.030); lt1.SetNDC();
+    lt1.DrawLatex(0.16, 0.85,
+    TString::Format("Total/stn: %.2e Hz   Peak: %.2e Hz/pad",
+                    R.h_recoil_pad_charge_L->Integral(),
+                    R.h_recoil_pad_charge_L->GetMaximum()));
+    c->cd(7);            
+    R.h_TC_phi->Draw("COLZ");
+    c->cd(8);            
+    R.h_TC_phi_L->Draw("COLZ");
     
     TString out = TString::Format("charge_%s", R.tag.Data());
     c->SaveAs(out + ".png");
@@ -1280,6 +1388,7 @@ void MakeChargePlot(const SimResult& R) {
 // =============================================================================
 SimResult pC_rate_sim(Double_t T_MeV = 500.0, Int_t n_events = 500000,
                       Double_t pad_pitch_um = 55.0,
+                      //Double_t pad_pitch_um = 5000.0,
                       Bool_t smearing_on = kTRUE) {
     SimResult R = RunSim("p", T_MeV, n_events, pad_pitch_um, smearing_on);
     MakeKinPlot(R);
